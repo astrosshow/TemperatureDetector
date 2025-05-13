@@ -4,10 +4,7 @@
 #include <stdint.h>
 
 #define DS18B20_PORT GPIOB
-#define DS18B20_PIN GPIO_PIN_6
-
-void ds18b20_init(void);
-float ds18b20_read_temp(void);
+#define DS18B20_PIN GPIO_PIN_9
 
 // Pin output function 
 static void ds18b20_pin_output(void) {
@@ -78,7 +75,7 @@ static int ds18b20_read_bit(void) {
 
 static void ds18b20_write_byte(int byte) {
     for (int i = 0; i < 8; i++) {
-        ds18b20_write_bit(byte & (1 << i));
+        ds18b20_write_bit((byte >> i) & 0x01);
     }
 }
 
@@ -88,6 +85,30 @@ static uint8_t ds18b20_read_byte(void) {
         if (ds18b20_read_bit())
             byte |= (1 << i);
     return byte;
+}
+
+void ds18b20_set_alarm(int8_t th, int8_t tl) {
+    if (!ds18b20_reset()) return;
+    ds18b20_write_byte(0xCC); // Skip ROM
+    ds18b20_write_byte(0x4E); // Write Scratchpad
+    ds18b20_write_byte(th);   // TH (high alarm)
+    ds18b20_write_byte(tl);   // TL (low alarm)
+    ds18b20_write_byte(0x7F); // Configuration register (default: 12-bit resolution)
+}
+
+// Calculate CRC8 for DS18B20 scratchpad
+static uint8_t ds18b20_crc8(const uint8_t *data, int len) {
+    uint8_t crc = 0;
+    for (int i = 0; i < len; i++) {
+        uint8_t inbyte = data[i];
+        for (int j = 0; j < 8; j++) {
+            uint8_t mix = (crc ^ inbyte) & 0x01;
+            crc >>= 1;
+            if (mix) crc ^= 0x8C;
+            inbyte >>= 1;
+        }
+    }
+    return crc;
 }
 
 float ds18b20_read_temp(void) {
@@ -100,8 +121,16 @@ float ds18b20_read_temp(void) {
     ds18b20_write_byte(0xCC); // Skip ROM
     ds18b20_write_byte(0xBE); // Read Scratchpad
 
-    uint8_t temp_lsb = ds18b20_read_byte();
-    uint8_t temp_msb = ds18b20_read_byte();
-    int16_t temp = (temp_msb << 8) | temp_lsb;
+    uint8_t scratchpad[9];
+    for (int i = 0; i < 9; i++) {
+        scratchpad[i] = ds18b20_read_byte();
+    }
+
+    // CRC check
+    if (ds18b20_crc8(scratchpad, 8) != scratchpad[8]) {
+        return -1000.0f; // CRC error
+    }
+
+    int16_t temp = (scratchpad[1] << 8) | scratchpad[0];
     return temp / 16.0f;
 }
